@@ -1,0 +1,6 @@
+# Repère de comparaison VOLONTAIREMENT non optimisé (pas le Dockerfile de prod)
+FROM node:22
+WORKDIR /app
+COPY . .
+RUN npm ci
+CMD ["node", "server.js"]
