@@ -1,0 +1,52 @@
+# Stack demo-api : API Node + PostgreSQL + Adminer.
+# Les variables ${...} sont interpolées depuis .env (voir .env.example).
+# Le mot de passe de la base passe par Docker Secrets (secrets/db_password.txt, hors Git).
+
+services:
+  api:
+    build: ./api
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER}
+      PGDATABASE: ${POSTGRES_DB}
+    # L'API lit PGPASSWORD : on le charge depuis le secret au démarrage, jamais en clair dans le YAML
+    command: ["sh", "-c", "PGPASSWORD=\"$$(cat /run/secrets/db_password)\" exec node server.js"]
+    secrets: [db_password]
+    ports:
+      - "${API_PORT:-8080}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_DB: ${POSTGRES_DB}
+    secrets: [db_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    # pas de "ports:" : la base n'est joignable que depuis le réseau du projet
+
+  adminer:
+    image: adminer:4
+    ports:
+      - "${ADMINER_PORT:-8081}:8080"
+    depends_on: [db]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt

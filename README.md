@@ -1,12 +1,100 @@
 # demo-api
 
-Le fil rouge des quêtes Docker : une mini-API "catalogue" que tu vas
-conteneuriser, faire persister, mettre en réseau, orchestrer et sécuriser,
-une quête à la fois.
+Mini-API "catalogue" (`Node` + `Express` + `PostgreSQL`) conteneurisée, servant de fil rouge aux quêtes Docker.
 
-Le métier est volontairement trivial (`Node` + `Express` + `PostgreSQL`,
-un catalogue de produits) : toute la difficulté est sur **Docker**, jamais
-sur le code applicatif.
+## Lancer la stack avec Docker Compose
+
+La stack contient 3 services :
+
+| Service | Image | Rôle | Accès |
+|---|---|---|---|
+| `api` | construite depuis `./api` | l'API demo-api | http://localhost:8080 |
+| `db` | `postgres:16-alpine` | base PostgreSQL (volume `pgdata`, healthcheck `pg_isready`) | **non publiée**, joignable seulement par `api` et `adminer` |
+| `adminer` | `adminer:4` | client SQL web | http://localhost:8081 |
+
+### Prérequis
+
+- Docker Engine ou Docker Desktop avec **Compose v2** (`docker compose version`)
+- Sous Windows : WSL ou Git Bash
+
+### Démarrage
+
+```bash
+# 1. variables d'environnement (interpolées dans compose.yml)
+cp .env.example .env
+
+# 2. mot de passe de la base (Docker Secrets, jamais commité)
+mkdir -p secrets
+printf '%s' 'un-mot-de-passe-solide' > secrets/db_password.txt
+
+# 3. build + démarrage en arrière-plan
+docker compose up -d --build
+```
+
+### Variables (`.env`)
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `POSTGRES_USER` | `demo` | utilisateur PostgreSQL (db et api) |
+| `POSTGRES_DB` | `demo` | nom de la base |
+| `API_PORT` | `8080` | port hôte de l'API |
+| `ADMINER_PORT` | `8081` | port hôte d'Adminer |
+
+`.env` est ignoré par Git, seul `.env.example` est commité.
+
+### Gestion du mot de passe (Docker Secrets)
+
+Le mot de passe n'apparaît ni dans `compose.yml`, ni dans `.env`, ni dans les variables d'environnement des conteneurs :
+
+- `secrets/db_password.txt` (dossier ignoré par Git) est déclaré comme secret `db_password` ;
+- `db` le lit via `POSTGRES_PASSWORD_FILE=/run/secrets/db_password` ;
+- `api` le charge au démarrage depuis `/run/secrets/db_password` dans `PGPASSWORD`.
+
+### URLs
+
+- API : http://localhost:8080 (`/health`, `/ready`, `/products`)
+- Adminer : http://localhost:8081 (système PostgreSQL, serveur `db`, utilisateur `demo`, base `demo`, mot de passe = contenu de `secrets/db_password.txt`)
+
+### Commandes utiles
+
+```bash
+docker compose ps              # état des services
+docker compose logs -f api     # logs de l'API
+docker compose down            # arrête et supprime conteneurs + réseau (GARDE les données)
+docker compose up -d           # relance : les données sont toujours là
+```
+
+### Repartir de zéro
+
+```bash
+docker compose down -v         # supprime aussi le volume pgdata : données perdues, init.sql rejoué au prochain up
+```
+
+### Test réalisé
+
+Commande testée : `docker compose up -d --build`, puis :
+
+```text
+$ docker compose ps
+SERVICE   STATUS                    PORTS
+adminer   Up 11 seconds             0.0.0.0:8081->8080/tcp
+api       Up 6 seconds (healthy)    0.0.0.0:8080->3000/tcp
+db        Up 12 seconds (healthy)   5432/tcp
+
+$ curl -s localhost:8080/products
+[{"id":3,"name":"T-shirt conteneur",...},{"id":2,"name":"Mug Docker",...},{"id":1,"name":"Sticker Demo",...}]
+
+$ curl -s -X POST -H 'content-type: application/json' -d '{"name":"Gourde","price_cents":900}' localhost:8080/products
+{"id":4,"name":"Gourde","price_cents":900,...}
+
+$ docker compose down && docker compose up -d
+$ curl -s localhost:8080/products
+[{"id":4,"name":"Gourde","price_cents":900,...},{"id":3,"name":"T-shirt conteneur",...},...]
+```
+
+« Gourde » survit au `down` puis `up` : les données sont dans le volume nommé `pgdata`.
+
+---
 
 ## Point de départ
 
