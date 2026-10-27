@@ -1,23 +1,44 @@
-# Stack demo-api : API Node + PostgreSQL + Adminer.
+# Stack demo-api : 2 services métier (api, notifier) + PostgreSQL + Adminer.
 # Les variables ${...} sont interpolées depuis .env (voir .env.example).
 # Le mot de passe de la base passe par Docker Secrets (secrets/db_password.txt, hors Git).
+#
+# Images : en local "docker compose up -d --build" les construit ; en déploiement
+# "docker compose pull" récupère sur GHCR exactement celles buildées et scannées en CI
+# (IMAGE_PREFIX + TAG, ex. TAG=v1.5.0).
 
 services:
   api:
-    build: ./api
+    build:
+      context: ./api
+      dockerfile: Dockerfile.multi
+    image: ${IMAGE_PREFIX:-ghcr.io/ynov-x-anthony/beddiaf_miloud_demo-api}/api:${TAG:-local}
     environment:
       PGHOST: db
       PGUSER: ${POSTGRES_USER}
       PGDATABASE: ${POSTGRES_DB}
+      VERSION: ${TAG:-local}
+      NOTIFIER_HOST: notifier
+      NOTIFIER_PORT: "4000"
     # L'API lit PGPASSWORD : on le charge depuis le secret au démarrage, jamais en clair dans le YAML
     command: ["sh", "-c", "PGPASSWORD=\"$$(cat /run/secrets/db_password)\" exec node server.js"]
     secrets: [db_password]
     ports:
       - "${API_PORT:-8080}:3000"
+    networks: [front, back]
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
+
+  notifier:
+    build:
+      context: ./notifier
+    image: ${IMAGE_PREFIX:-ghcr.io/ynov-x-anthony/beddiaf_miloud_demo-api}/notifier:${TAG:-local}
+    environment:
+      PORT: "4000"
+    networks: [back] # jamais exposé au front : personne n'appelle notifier de l'extérieur
+    restart: unless-stopped
+    # pas de "ports:" : seul api l'appelle, par son nom sur le réseau back
 
   db:
     image: postgres:16-alpine
@@ -34,15 +55,21 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks: [back]
     restart: unless-stopped
-    # pas de "ports:" : la base n'est joignable que depuis le réseau du projet
+    # pas de "ports:" : la base n'est joignable que depuis le réseau back
 
   adminer:
     image: adminer:4
     ports:
       - "${ADMINER_PORT:-8081}:8080"
+    networks: [front, back]
     depends_on: [db]
     restart: unless-stopped
+
+networks:
+  front:
+  back:
 
 volumes:
   pgdata:

@@ -4,13 +4,14 @@ Mini-API "catalogue" (`Node` + `Express` + `PostgreSQL`) conteneurisée, servant
 
 ## Lancer la stack avec Docker Compose
 
-La stack contient 3 services :
+La stack contient 2 services métier (`api`, `notifier`), une base et un client SQL :
 
-| Service | Image | Rôle | Accès |
-|---|---|---|---|
-| `api` | construite depuis `./api` | l'API demo-api | http://localhost:8080 |
-| `db` | `postgres:16-alpine` | base PostgreSQL (volume `pgdata`, healthcheck `pg_isready`) | **non publiée**, joignable seulement par `api` et `adminer` |
-| `adminer` | `adminer:4` | client SQL web | http://localhost:8081 |
+| Service | Image | Rôle | Réseaux | Accès |
+|---|---|---|---|---|
+| `api` | construite depuis `./api` (`Dockerfile.multi`) | l'API demo-api | `front` + `back` | http://localhost:8080 |
+| `notifier` | construite depuis `./notifier` | reçoit les événements « produit créé » et logge une notification | `back` | **non publié**, appelé seulement par `api` |
+| `db` | `postgres:16-alpine` | base PostgreSQL (volume `pgdata`, healthcheck `pg_isready`) | `back` | **non publiée** |
+| `adminer` | `adminer:4` | client SQL web | `front` + `back` | http://localhost:8081 |
 
 ### Prérequis
 
@@ -39,6 +40,8 @@ docker compose up -d --build
 | `POSTGRES_DB` | `demo` | nom de la base |
 | `API_PORT` | `8080` | port hôte de l'API |
 | `ADMINER_PORT` | `8081` | port hôte d'Adminer |
+| `IMAGE_PREFIX` | `ghcr.io/ynov-x-anthony/beddiaf_miloud_demo-api` | registre des images `api` et `notifier` |
+| `TAG` | `local` | version des images (en déploiement : le tag Git, ex. `v1.5.0`) |
 
 `.env` est ignoré par Git, seul `.env.example` est commité.
 
@@ -93,6 +96,55 @@ $ curl -s localhost:8080/products
 ```
 
 « Gourde » survit au `down` puis `up` : les données sont dans le volume nommé `pgdata`.
+
+## Microservices : le service `notifier`
+
+`notifier` est un service métier à part entière : son propre dossier, son propre `package.json`,
+son propre `Dockerfile` durci (base épinglée, non-root, `HEALTHCHECK`) et sa propre image.
+`api` ne connaît de lui que son contrat réseau : `POST http://notifier:4000/notify`.
+
+- Après chaque `POST /products` réussi, `api` appelle `notifier` en **best-effort** : l'appel part
+  après la réponse, avec un timeout de 2 s, et une erreur est seulement loggée. Une panne de
+  `notifier` ne fait jamais échouer la création d'un produit.
+- `notifier` est sur le réseau `back` uniquement, sans `ports:` : il est injoignable depuis l'extérieur
+  et depuis le réseau `front`.
+
+Test local :
+
+```text
+$ docker compose up -d --build
+$ curl -s -X POST localhost:8080/products -H "Content-Type: application/json" -d '{"name":"Clavier meca","price_cents":5900}'
+{"id":4,"name":"Clavier meca","price_cents":5900,...}
+$ docker compose logs notifier | tail -5
+notifier-1  | {"level":"info","msg":"notifier started","port":4000}
+notifier-1  | [notifier] nouveau produit : {"id":4,"name":"Clavier meca","price_cents":5900}
+
+$ docker compose stop notifier
+$ curl -s -w "\nHTTP %{http_code}\n" -X POST localhost:8080/products -H "Content-Type: application/json" -d '{"name":"Souris","price_cents":2500}'
+{"id":5,"name":"Souris","price_cents":2500,...}
+HTTP 201
+api-1  | {"level":"warn","msg":"notify failed","err":"The operation was aborted due to timeout"}
+```
+
+## CI/CD (`.github/workflows/ci.yml`)
+
+- **Job `image`** en `matrix` (`api`, `notifier`) : chaque service est buildé, scanné par Trivy
+  (HIGH/CRITICAL, `ignore-unfixed`, gate `exit-code: 1` sur les tags `v*`), puis l'image scannée
+  est publiée sur `ghcr.io/ynov-x-anthony/beddiaf_miloud_demo-api/<service>:<tag>`.
+- **Job `deploy`** (après `image`, seulement sur les tags `v*`) : `docker compose pull` puis
+  `docker compose up -d --no-build`, smoke test (`POST /products` puis notification dans les logs de
+  `notifier`) et test de panne de `notifier` (`POST /products` reste en 201).
+
+> **Cible de déploiement simulée** : faute de VM, le job `deploy` s'exécute sur le runner GitHub
+> (variante autorisée par la quête). La mécanique est celle d'un vrai serveur : aucune image n'est
+> reconstruite, ce sont celles publiées sur GHCR. Sur un vrai serveur, les mêmes commandes seraient
+> lancées en SSH : `cd /opt/demo-api && git pull && docker compose pull && docker compose up -d`.
+
+Publier une version :
+
+```bash
+git tag v1.5.0 && git push origin v1.5.0
+```
 
 ---
 

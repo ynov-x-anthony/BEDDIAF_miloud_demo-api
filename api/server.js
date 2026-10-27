@@ -8,6 +8,8 @@
  *   PORT             port d'ecoute                    (def: 3000)
  *   VERSION          renvoyee par "/" et /version     (def: "dev")
  *   PG*              connexion PostgreSQL (voir db.js)
+ *   NOTIFIER_HOST    nom du service notifier          (def: "notifier")
+ *   NOTIFIER_PORT    port du service notifier         (def: 4000)
  */
 
 const express = require('express');
@@ -15,6 +17,8 @@ const db = require('./db');
 
 const PORT = Number(process.env.PORT || 3000);
 const VERSION = process.env.VERSION || 'dev';
+const NOTIFIER_HOST = process.env.NOTIFIER_HOST || 'notifier';
+const NOTIFIER_PORT = process.env.NOTIFIER_PORT || 4000;
 
 const app = express();
 app.use(express.json());
@@ -62,12 +66,28 @@ app.post('/products', async (req, res) => {
   if (!name || !Number.isInteger(priceCents) || priceCents < 0) {
     return res.status(400).json({ error: 'name (string) et price_cents (entier >= 0) requis' });
   }
+  let product;
   try {
-    res.status(201).json(await db.addProduct(name, priceCents));
+    product = await db.addProduct(name, priceCents);
   } catch (err) {
-    res.status(503).json({ error: 'db_unavailable', detail: err.message });
+    return res.status(503).json({ error: 'db_unavailable', detail: err.message });
   }
+  res.status(201).json(product);
+  notifyProductCreated(product);
 });
+
+// Appel best-effort au service notifier (resolu par son nom sur le reseau Compose) :
+// lance APRES la reponse, une panne de notifier ne fait jamais echouer POST /products.
+function notifyProductCreated(product) {
+  fetch(`http://${NOTIFIER_HOST}:${NOTIFIER_PORT}/notify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: product.id, name: product.name, price_cents: product.price_cents }),
+    signal: AbortSignal.timeout(2000),
+  }).catch((err) => {
+    console.error(JSON.stringify({ level: 'warn', msg: 'notify failed', err: err.message }));
+  });
+}
 
 const server = app.listen(PORT, () => {
   console.log(JSON.stringify({ level: 'info', msg: 'demo-api started', port: PORT, version: VERSION }));
